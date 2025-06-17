@@ -8,13 +8,13 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from logging import LogRecord
-from numbers import Number
 from tempfile import TemporaryFile
 from time import sleep
 from typing import Optional
 
 import requests
 from requests import Response
+
 from soda_core.common.dataset_identifier import DatasetIdentifier
 from soda_core.common.datetime_conversions import (
     convert_datetime_to_str,
@@ -32,14 +32,11 @@ from soda_core.common.logging_constants import Emoticons, ExtraKeys, soda_logger
 from soda_core.common.logs import Location, Logs
 from soda_core.common.soda_cloud_dto import (
     SodaCloudDiagnostics,
-    SodaCloudFreshnessDiagnostics,
-    SodaCloudMetricValuesDiagnostics,
     SodaCloudSchemaColumnInfo,
     SodaCloudSchemaDataTypeMismatch,
-    SodaCloudSchemaDiagnostics,
-    SodaCloudThresholdDiagnostic,
+    SodaCloudThresholdDiagnostic, SodaCloudDiagnosticBlock, SodaCloudNumericMetricValuesDiagnosticBlock,
+    SodaCloudFreshnessDiagnosticBlock, SodaCloudSchemaDiagnosticBlock,
 )
-from soda_core.common.statements.metadata_columns_query import ColumnMetadata
 from soda_core.common.version import SODA_CORE_VERSION, clean_soda_core_version
 from soda_core.common.yaml import SodaCloudYamlSource, YamlObject
 from soda_core.contracts.contract_publication import ContractPublicationResult
@@ -1014,6 +1011,7 @@ def _build_check_result_cloud_dict(check_result: CheckResult) -> dict:
         "type": "generic",
         "checkType": check_result.check.type,
         "definition": check_result.check.definition,
+        "diagnostics": _build_diagnostics_json_dict(check_result),
         "resourceAttributes": [],  # TODO
         "location": {
             "filePath": (
@@ -1032,10 +1030,6 @@ def _build_check_result_cloud_dict(check_result: CheckResult) -> dict:
         "source": "soda-contract",
     }
 
-    diagnostics_json_dict: Optional[dict] = _build_diagnostics_json_dict(check_result)
-    if diagnostics_json_dict:
-        check_result_cloud_dict["diagnostics"] = diagnostics_json_dict
-
     return check_result_cloud_dict
 
 
@@ -1045,58 +1039,52 @@ def _build_diagnostics_json_dict(check_result: CheckResult) -> Optional[dict]:
     )
     from soda_core.contracts.impl.check_types.schema_check import SchemaCheckResult
 
-    metric_values: Optional[SodaCloudMetricValuesDiagnostics] = (
-        SodaCloudMetricValuesDiagnostics(
-            thresholdMetricName=check_result.threshold_metric_name, values=check_result.diagnostic_metric_values
+    blocks: list[SodaCloudDiagnosticBlock] = []
+
+    if check_result.diagnostic_metric_values:
+        blocks.append(
+            SodaCloudNumericMetricValuesDiagnosticBlock(
+                thresholdMetricName=check_result.threshold_metric_name,
+                values=check_result.diagnostic_metric_values
+            )
         )
-        if check_result.diagnostic_metric_values
-        else None
+
+    if isinstance(check_result, SchemaCheckResult):
+        blocks.append(
+            SodaCloudSchemaDiagnosticBlock(
+                expectedColumns=_build_diagnostics_schema_column_info(check_result.expected_columns),
+                actualColumns=_build_diagnostics_schema_column_info(check_result.actual_columns),
+                expectedColumnNamesNotActual=check_result.expected_column_names_not_actual,
+                actualColumnNamesNotExpected=check_result.actual_column_names_not_expected,
+                columnDataTypeMismatches=_build_diagnostics_column_data_type_mismatches(
+                    check_result.column_data_type_mismatches
+                ),
+                areColumnsOutOfOrder=check_result.are_columns_out_of_order,
+            )
+        )
+
+    if isinstance(check_result, FreshnessCheckResult):
+        blocks.append(
+            SodaCloudFreshnessDiagnosticBlock(
+                maxTimestamp=check_result.max_timestamp,
+                maxTimestampUtc=check_result.max_timestamp_utc,
+                dataTimestamp=check_result.data_timestamp,
+                dataTimestampUtc=check_result.data_timestamp_utc,
+                freshness=check_result.freshness,
+                freshnessInSeconds=check_result.freshness_in_seconds,
+                unit=check_result.unit,
+            )
+        )
+
+    soda_cloud_diagnostics: SodaCloudDiagnostics = SodaCloudDiagnostics(
+        blocks=blocks,
+        #  TODO: this default is here only because check.diaignostics.value is a required non-nullable field in the api.
+        value=check_result.get_threshold_value() or 0,
+        fail=_build_fail_threshold(check_result)
     )
 
-    schema_diagnostics: Optional[SodaCloudSchemaDiagnostics] = (
-        SodaCloudSchemaDiagnostics(
-            expectedColumns=_build_diagnostics_schema_column_info(check_result.expected_columns),
-            actualColumns=_build_diagnostics_schema_column_info(check_result.actual_columns),
-            expectedColumnNamesNotActual=check_result.expected_column_names_not_actual,
-            actualColumnNamesNotExpected=check_result.actual_column_names_not_expected,
-            columnDataTypeMismatches=_build_diagnostics_column_data_type_mismatches(
-                check_result.column_data_type_mismatches
-            ),
-            areColumnsOutOfOrder=check_result.are_columns_out_of_order,
-        )
-        if isinstance(check_result, SchemaCheckResult)
-        else None
-    )
-
-    freshness_diagnostics: Optional[SodaCloudFreshnessDiagnostics] = (
-        SodaCloudFreshnessDiagnostics(
-            maxTimestamp=check_result.max_timestamp,
-            maxTimestampUtc=check_result.max_timestamp_utc,
-            dataTimestamp=check_result.data_timestamp,
-            dataTimestampUtc=check_result.data_timestamp_utc,
-            freshness=check_result.freshness,
-            freshnessInSeconds=check_result.freshness_in_seconds,
-            unit=check_result.unit,
-        )
-        if isinstance(check_result, FreshnessCheckResult)
-        else None
-    )
-
-    #  TODO: this default is here only because check.diaignostics.value is a required non-nullable field in the api.
-    # Re-think this when we switch to the new diagnostics format and/or api accepts Null or something else that reflects the Core model.
-    # A poor default, but it really needs to be a number and not None or Nan.
-    # It's guaranteed to be 0 for non-evaluated checks, which is not ideal, but better than stopping ingestion.
-    check_result_value: Number = check_result.get_threshold_value() or 0
-
-    fail_threshold: SodaCloudThresholdDiagnostic = _build_fail_threshold(check_result)
-
-    return SodaCloudDiagnostics(
-        schema=schema_diagnostics,
-        metricValues=metric_values,
-        freshness=freshness_diagnostics,
-        value=check_result_value,
-        fail=fail_threshold,
-    ).model_dump(by_alias=True)
+    soda_cloud_diagnostics_json_dict: dict = soda_cloud_diagnostics.model_dump(by_alias=True)
+    return soda_cloud_diagnostics_json_dict
 
 
 def _map_remote_scan_status_to_contract_verification_status(

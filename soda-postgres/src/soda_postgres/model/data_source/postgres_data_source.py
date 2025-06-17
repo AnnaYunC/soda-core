@@ -1,5 +1,5 @@
 import abc
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import Field, field_validator
 from soda_core.model.data_source.data_source import DataSourceBase
@@ -14,6 +14,10 @@ class PostgresDataSource(DataSourceBase, abc.ABC):
     type: Literal["postgres"] = Field("postgres")
     connection_properties: PostgresConnectionProperties = Field(
         ..., alias="connection", description="Data source connection details"
+    )
+    dwh_schema: Optional[str] = Field(
+        description="Data source connection details",
+        default=None,
     )
 
     @field_validator("connection_properties", mode="before")
