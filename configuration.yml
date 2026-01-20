@@ -1,0 +1,10 @@
+data_source yageo_sale:
+  type: sqlserver
+  connection:
+    host: ${YNKBW_HOST}
+    port: 1433
+    driver: ODBC Driver 17 for SQL Server
+    username: ${YNKBW_USER}
+    password: ${YNKBW_PASSWORD}
+    database: ${YNKBW_DB}
+  schema: yageo_sale

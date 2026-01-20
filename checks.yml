@@ -1,0 +1,24 @@
+checks for billing_snapshot:
+  # 1. 基礎行數檢查
+  - row_count > 0
+
+  # 2. 缺失值檢查 (不允許 NULL)
+  - missing_count(SRC_ENTITY) = 0
+  - missing_count(YEAR_MONTH) = 0
+  - missing_count(USD) = 0
+  - missing_count(SNAPSHOT_DATE) = 0
+
+  # 3. 格式檢查 (YEAR_MONTH 應該是 YYYY/MM)
+  - invalid_count(YEAR_MONTH) = 0:
+      valid format: '[0-9][0-9][0-9][0-9]/[0-9][0-9]'
+
+  # 4. 數值範圍檢查 (金額和數量不應為負數)
+  - min(USD) >= 0
+  - min(QTY) >= 0
+
+  # 5. 唯一性檢查 (同一時間點的同一個實體在同一個月份不應有重複資料)
+  - duplicate_count(SRC_ENTITY, YEAR_MONTH, SNAPSHOT_DATE) = 0
+
+  # 6. 新鮮度檢查 (確認資料是 24 小時內產生的)
+  - freshness(SNAPSHOT_DATE) < 24h:
+      name: 資料必須在 24 小時內更新
